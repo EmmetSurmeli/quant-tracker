@@ -1,4 +1,4 @@
-"""Send one sample Discord alert (or dry-run preview) for quick webhook testing."""
+"""Preview or send one sample alert without scraping or changing history."""
 
 from __future__ import annotations
 
@@ -10,45 +10,21 @@ from dotenv import load_dotenv
 from notifier import send_discord_alert
 
 
-def parse_bool_env(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
 def run() -> None:
     load_dotenv()
-
-    webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
-    dry_run = parse_bool_env("DRY_RUN", default=False)
-
-    sample_item = {
-        "firm": "Sample Firm",
-        "source": "Students",
-        "type": "Internship",
-        "title_or_snippet": "Quantitative Trader Internship - Undergraduate Program",
-        "application_deadline": "April 1, 2026",
-        "program_date_or_timeline": "10-week summer internship",
-        "match_reason": "target quant/trading internship phrase; student/early-career signal",
-        "url": "https://example.com/opportunity",
+    dry_run = os.getenv("DRY_RUN", "true").strip().lower() in {"1", "true", "yes", "on"}
+    sample = {
+        "firm": "Sample Firm", "source": "Webhook Test", "type": "Internship",
+        "title_or_snippet": "Quantitative Research Intern", "summary": "Sample opportunity message for webhook testing.",
+        "eligibility": "Undergraduate students", "location": "New York",
+        "application_deadline": "", "program_date_or_timeline": "",
+        "match_reason": "webhook test", "url": "https://example.com/opportunity",
         "source_page_url": "https://example.com/students",
     }
-
-    result = send_discord_alert(webhook_url, sample_item, date.today().isoformat(), dry_run=dry_run)
-
-    if result["ok"] and result["sent"]:
-        print("Webhook test sent successfully.")
-        return
-
-    if result["ok"] and result["dry_run"]:
-        print("DRY_RUN=true; message preview below:\n")
-        print(result["message"])
-        return
-
-    status = result.get("status_code")
-    error = result.get("error", "Unknown error")
-    print(f"Webhook test failed (status={status}): {error}")
+    result = send_discord_alert(os.getenv("DISCORD_WEBHOOK_URL", "").strip(), sample,
+                                date.today().isoformat(), dry_run=dry_run)
+    print(f"Webhook test: {result['status']}")
+    print(result["message"] if dry_run else result["error"])
 
 
 if __name__ == "__main__":
