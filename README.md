@@ -1,105 +1,55 @@
-# Quant Opportunity Tracker (MVP)
+# Quant Opportunity Tracker
 
-This bot checks a list of finance/trading firm pages for quant/trading/research internships, student programs, and early-career events, then alerts a Discord channel only for new high-signal matches.
-
-## What The Bot Does
-- Loads monitored firm URLs from `config.py`.
-- Scrapes visible page text + links with `requests` and `BeautifulSoup`.
-- Applies strict keyword filtering to prioritize high-quality quant/student opportunities and reduce noise.
-- Extracts explicit timing metadata when present:
-  - `application_deadline`
-  - `program_date_or_timeline`
-- Deduplicates with stable hashes and saves history in `seen.json`.
-- Sends clean Discord webhook alerts with mention-safe payloads.
-- Supports `DRY_RUN` so you can test without posting.
-- Limits webhook floods with `MAX_ALERTS_PER_RUN` (still saves all findings to history).
-
-## Files
-- `main.py` - run-once bot pipeline.
-- `config.py` - monitored URLs, filtering terms, score threshold, alert cap.
-- `scraper.py` - HTTP fetch + page extraction.
-- `filters.py` - relevance scoring + deadline/timeline extraction.
-- `storage.py` - JSON history handling.
-- `notifier.py` - Discord message formatting + webhook send logic.
-- `test_webhook.py` - send one sample alert (or dry-run preview) without scraping.
-- `.env.example` - environment template.
-- `seen.json` - auto-created history file.
+A small run-once Python bot that checks official student pages and public job-board feeds for quant/trading internships and student programs. It sends new matches to Discord and keeps local JSON history. No database, browser automation, or AI service is needed.
 
 ## Setup
-1. Install dependencies:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-2. Create `.env`:
-
-```bash
 cp .env.example .env
 ```
 
-3. Set values in `.env`:
+Edit `.env` with your Discord webhook URL. Keep it private:
 
 ```env
-DISCORD_WEBHOOK_URL=
-DRY_RUN=false
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+DRY_RUN=true
 ```
 
-### DRY_RUN behavior
-- `DRY_RUN=true`: the bot prints the exact Discord message it would send and does not post.
-- `DRY_RUN=false`: the bot posts to the webhook normally.
+Start with `DRY_RUN=true`. The bot shows messages but does not post or mark opportunities sent. After reviewing results, set `DRY_RUN=false` and run again. A quick webhook-only test is `python3 test_webhook.py`; it follows `DRY_RUN` and does not touch history.
 
 ## Run
-```bash
-python main.py
-```
-
-The script runs once and exits.
-
-## Quick Webhook Test (No Scraping)
-```bash
-python test_webhook.py
-```
-
-Useful to verify webhook formatting and env setup quickly.
-
-## Reset `seen.json`
-If you want the bot to treat everything as new again:
 
 ```bash
-rm -f seen.json
+python3 main.py
 ```
 
-On next run, it will recreate `seen.json` automatically.
+The script checks each configured source once and exits. Edit URLs and `MAX_ALERTS_PER_RUN` in `config.py`. Sources can be `html`, `detail`, `events`, `greenhouse`, or `lever`. Filtering and extraction rules are in `filters.py`.
 
-Alternative non-destructive reset:
+## History and delivery
 
-```bash
-echo "[]" > seen.json
-```
+`seen.json` is created automatically. Each record contains firm, source, title, URL, summary, eligibility, location, deadline, timeline, identity keys, first-seen date, and a delivery status. It is ignored by Git. The pre-rebuild history is backed up locally as `seen.pre-rebuild-2026-10-14.json`; the rebuilt tracker starts with an empty history.
 
-## Daily Automation on macOS (cron)
-Example: run every day at 8:00 AM
+- `sent`: Discord confirmed delivery; never sent again for the same opportunity.
+- `pending`: found but capped, dry-run-only, missing webhook, or definitely failed; retried next run.
+- `delivery_unknown`: a timeout/connection error or server error may have happened after acceptance. Check the channel before manually changing this record back to `pending`.
+
+To start over later, back up `seen.json` and replace its contents with `[]`. This can resend all currently detected opportunities. Avoid deleting a valid history by accident.
+
+Deduplication uses ATS posting IDs or canonical opportunity URLs where available, plus a normalized firm/title/type/event-cycle fallback. It is best-effort: sites can rename or repost roles, and a crash between Discord delivery and history write can still cause a duplicate.
+
+## Daily macOS cron
+
+Use `crontab -e` and add a line like this (replace both paths with your own absolute paths):
 
 ```cron
-0 8 * * * cd /Users/YOUR_USER/FOLDER/quant_tracker && /usr/bin/python3 main.py >> bot.log 2>&1
+0 8 * * * cd /absolute/path/quant_tracker && /absolute/path/quant_tracker/.venv/bin/python main.py >> /absolute/path/quant_tracker/bot.log 2>&1
 ```
 
-## Tuning
-- Edit monitored pages in `MONITORED_SITES` (`config.py`).
-- Tighten/relax filters in `config.py` and scoring logic in `filters.py`.
-- Change flood safeguard with `MAX_ALERTS_PER_RUN` in `config.py`.
+Run it manually first. `bot.log`, `.env`, and all `seen` JSON files are ignored by Git.
 
 ## Limitations
-- `requests` scraping can miss jobs loaded only via JavaScript.
-- Deadline/timeline extraction is regex + nearby-line heuristic (MVP), so it only captures explicitly present patterns.
-- Some pages may still require manual checking even with strict filtering.
 
-## Stored Fields (`seen.json`)
-Each record includes:
-- `firm`, `source`, `source_page_url`
-- `title_or_snippet`, `url`, `hash`
-- `first_seen_date`, `alerted`
-- `match_reason`, `type`, `score`
-- `application_deadline`
-- `program_date_or_timeline`
+The bot reads visible HTML with `requests`/BeautifulSoup and public Greenhouse/Lever feeds. JavaScript-only listings, changed page layouts, or anti-bot pages may yield zero candidates; per-site errors are logged without stopping other sources. Deadline, program dates, eligibility, and summary are extracted only from explicit listing text, so missing fields stay blank. Review links before applying. No live webhook is exercised by the test suite.

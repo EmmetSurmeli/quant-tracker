@@ -1,4 +1,4 @@
-"""Discord webhook notification helpers."""
+"""Readable, mention-safe Discord webhook alerts."""
 
 from __future__ import annotations
 
@@ -7,137 +7,74 @@ from typing import Any
 
 import requests
 
-from config import SNIPPET_MAX_CHARS
 
-
-def truncate_text(value: str, max_chars: int) -> str:
-    text = " ".join(value.split())
-    if len(text) <= max_chars:
-        return text
-    return text[: max_chars - 3].rstrip() + "..."
+def short(value: str, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[:limit - 3].rstrip() + "..."
 
 
 def build_discord_message(item: dict[str, Any], found_date: str) -> str:
-    title_snippet = truncate_text(item.get("title_or_snippet", ""), SNIPPET_MAX_CHARS)
-    reason = truncate_text(item.get("match_reason", "strict quant/student match"), 180)
+    def field(name: str, limit: int = 300) -> str:
+        return short(item.get(name, ""), limit) or "Not found"
 
-    application_deadline = item.get("application_deadline", "") or "Not found"
-    program_date_or_timeline = item.get("program_date_or_timeline", "") or "Not found"
-
-    return (
+    message = (
         "🚨 NEW QUANT OPPORTUNITY\n\n"
-        f"Firm: {item.get('firm', 'Unknown')}\n"
-        f"Source: {item.get('source', 'Unknown')}\n"
-        f"Type: {item.get('type', 'Opportunity')}\n"
-        f"Title/Snippet: {title_snippet}\n\n"
-        f"Application Deadline: {application_deadline}\n"
-        f"Program Date / Timeline: {program_date_or_timeline}\n\n"
-        f"Reason Matched: {reason}\n\n"
-        "Opportunity URL:\n"
-        f"{item.get('url', '')}\n\n"
-        "Source Page:\n"
-        f"{item.get('source_page_url', '')}\n\n"
-        "Found:\n"
-        f"{found_date}"
+        f"Firm: {field('firm', 90)}\n"
+        f"Source: {field('source', 90)}\n"
+        f"Type: {field('type', 40)}\n"
+        f"Title/Snippet: {field('title_or_snippet', 180)}\n"
+        f"Summary: {field('summary', 250)}\n\n"
+        f"Eligibility: {field('eligibility', 420)}\n"
+        f"Location: {field('location', 120)}\n"
+        f"Application Deadline: {field('application_deadline', 140)}\n"
+        f"Program Date / Timeline: {field('program_date_or_timeline', 140)}\n\n"
+        f"Reason Matched: {field('match_reason', 110)}\n\n"
+        f"Opportunity URL:\n{field('url', 350)}\n\n"
+        f"Source Page:\n{field('source_page_url', 350)}\n\n"
+        f"Found: {found_date}"
     )
+    return message if len(message) <= 2000 else message[:1997].rstrip() + "..."
 
 
-def _parse_retry_after_seconds(response: requests.Response) -> float:
+def retry_delay(response: requests.Response) -> float:
     try:
         payload = response.json()
+        if isinstance(payload, dict) and isinstance(payload.get("retry_after"), (int, float)):
+            return max(0.0, float(payload["retry_after"]))
+    except ValueError:
+        pass
+    try:
+        return max(0.0, float(response.headers.get("Retry-After", "0")))
     except ValueError:
         return 0.0
 
-    retry_after = payload.get("retry_after", 0)
-    if not isinstance(retry_after, (int, float)):
-        return 0.0
 
-    # Discord may return seconds; some endpoints may include millisecond-style values.
-    if retry_after > 100:
-        return min(retry_after / 1000.0, 30.0)
-
-    return min(float(retry_after), 30.0)
-
-
-def send_discord_alert(
-    webhook_url: str,
-    item: dict[str, Any],
-    found_date: str,
-    dry_run: bool = False,
-    max_retries: int = 2,
-) -> dict[str, Any]:
-    """Send one alert message to Discord or return a dry-run preview."""
+def send_discord_alert(webhook_url: str, item: dict[str, Any], found_date: str,
+                       dry_run: bool = False) -> dict[str, Any]:
+    """Return status sent, pending, delivery_unknown, or dry_run."""
     message = build_discord_message(item, found_date)
-
     if dry_run:
-        return {
-            "ok": True,
-            "sent": False,
-            "dry_run": True,
-            "message": message,
-            "status_code": None,
-            "error": "",
-        }
-
+        return {"status": "dry_run", "message": message, "error": ""}
     if not webhook_url:
-        return {
-            "ok": False,
-            "sent": False,
-            "dry_run": False,
-            "message": message,
-            "status_code": None,
-            "error": "Missing DISCORD_WEBHOOK_URL",
-        }
-
-    payload = {
-        "content": message,
-        "allowed_mentions": {"parse": []},
-    }
-
-    for attempt in range(max_retries + 1):
+        return {"status": "pending", "message": message, "error": "Missing DISCORD_WEBHOOK_URL"}
+    payload = {"content": message, "allowed_mentions": {"parse": []}}
+    for attempt in range(3):
         try:
-            response = requests.post(webhook_url, json=payload, timeout=15)
+            response = requests.post(webhook_url, params={"wait": "true"}, json=payload, timeout=15)
         except requests.RequestException as exc:
-            return {
-                "ok": False,
-                "sent": False,
-                "dry_run": False,
-                "message": message,
-                "status_code": None,
-                "error": str(exc),
-            }
-
+            # The server may have accepted a message before the connection failed.
+            return {"status": "delivery_unknown", "message": message,
+                    "error": f"{type(exc).__name__}; check the Discord channel before retrying"}
         if response.status_code in (200, 204):
-            return {
-                "ok": True,
-                "sent": True,
-                "dry_run": False,
-                "message": message,
-                "status_code": response.status_code,
-                "error": "",
-            }
-
-        if response.status_code == 429 and attempt < max_retries:
-            wait_seconds = _parse_retry_after_seconds(response)
-            if wait_seconds > 0:
-                time.sleep(wait_seconds)
-            continue
-
-        error_text = truncate_text(response.text or "Discord webhook request failed", 240)
-        return {
-            "ok": False,
-            "sent": False,
-            "dry_run": False,
-            "message": message,
-            "status_code": response.status_code,
-            "error": error_text,
-        }
-
-    return {
-        "ok": False,
-        "sent": False,
-        "dry_run": False,
-        "message": message,
-        "status_code": None,
-        "error": "Failed to send Discord message after retries",
-    }
+            return {"status": "sent", "message": message, "error": ""}
+        if response.status_code == 429:
+            if attempt < 2:
+                time.sleep(retry_delay(response))
+                continue
+            return {"status": "pending", "message": message, "error": "Discord rate limit persisted"}
+        if response.status_code >= 500:
+            return {"status": "delivery_unknown", "message": message,
+                    "error": f"Discord HTTP {response.status_code}; check channel before retrying"}
+        return {"status": "pending", "message": message,
+                "error": f"Discord HTTP {response.status_code}: {short(response.text, 160)}"}
+    return {"status": "pending", "message": message, "error": "Rate limit retries exhausted"}
