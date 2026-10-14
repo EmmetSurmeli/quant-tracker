@@ -38,7 +38,7 @@ def identity_keys(item: dict[str, Any]) -> set[str]:
         keys.add(f"posting:{posting_id}")
     url = canonical_url(item.get("url", ""))
     source = canonical_url(item.get("source_page_url", ""))
-    if url and url != source:
+    if url and (url != source or item.get("source_kind") == "detail"):
         keys.add(f"url:{firm}:{url}:{cycle}")
     if not keys:
         keys.add(fallback)

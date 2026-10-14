@@ -11,7 +11,7 @@ from config import MAX_ALERTS_PER_RUN, MONITORED_SITES, SEEN_FILE_PATH
 from filters import evaluate
 from notifier import send_discord_alert
 from scraper import fetch_site
-from storage import load_seen_items, merge_discovery, save_seen_items
+from storage import identity_keys, load_seen_items, merge_discovery, save_seen_items
 
 
 def dry_run_enabled() -> bool:
@@ -26,7 +26,8 @@ def run(sites: list[dict[str, str]] | None = None, history_path: str = SEEN_FILE
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     records = load_seen_items(history_path)
     stats = {"sites": 0, "errors": 0, "candidates": 0, "matches": 0,
-             "new": 0, "attempted": 0, "sent": 0, "previewed": 0, "pending": 0, "unknown": 0}
+             "new": 0, "attempted": 0, "sent": 0, "previewed": 0, "pending": 0, "unknown": 0, "not_seen": 0}
+    observed_keys: set[str] = set()
     print(f"[START] {len(sites)} sources | {len(records)} saved | dry-run={dry_run} | cap={MAX_ALERTS_PER_RUN}")
     for index, site in enumerate(sites, 1):
         stats["sites"] += 1
@@ -44,6 +45,7 @@ def run(sites: list[dict[str, str]] | None = None, history_path: str = SEEN_FILE
             item = evaluate(card, site, today)
             if not item:
                 continue
+            observed_keys.update(identity_keys(item))
             matched += 1
             if merge_discovery(records, item, today.isoformat()):
                 added += 1
@@ -55,7 +57,10 @@ def run(sites: list[dict[str, str]] | None = None, history_path: str = SEEN_FILE
     for record in records:
         if record["status"] != "pending":
             continue
-        if stats["attempted"] >= MAX_ALERTS_PER_RUN:
+        if not set(record.get("identity_keys") or identity_keys(record)) & observed_keys:
+            stats["not_seen"] += 1
+            continue
+        if not dry_run and stats["attempted"] >= MAX_ALERTS_PER_RUN:
             stats["pending"] += 1
             continue
         stats["attempted"] += 1

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
+from html import unescape
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlsplit
 
 import requests
 from bs4 import BeautifulSoup, Tag
@@ -14,6 +15,7 @@ from config import REQUEST_TIMEOUT_SECONDS, USER_AGENT
 HEADERS = {"User-Agent": USER_AGENT, "Accept": "text/html,application/json"}
 CARD_HINT = re.compile(r"job|career|opening|position|program|event|intern|role", re.I)
 BAD_LINK = re.compile(r"mailto:|tel:|javascript:|\.pdf(?:$|\?)", re.I)
+NON_OPPORTUNITY_PATH = re.compile(r"/(?:stories|story|news|blog|departments|people)/", re.I)
 
 
 def clean(value: str) -> str:
@@ -26,7 +28,7 @@ def lines(tag: Tag) -> str:
     ))
 
 
-def visible_soup(html: str) -> BeautifulSoup:
+def visible_soup(html: str | bytes) -> BeautifulSoup:
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "noscript", "template", "nav", "footer", "header"]):
         tag.decompose()
@@ -40,8 +42,8 @@ def card_for(anchor: Tag) -> Tag:
             break
         content = lines(parent)
         classes = " ".join(parent.get("class", []))
-        has_heading = parent.find(re.compile("^h[2-6]$")) is not None
-        if (parent.name in {"article", "li"} or CARD_HINT.search(classes) or has_heading) and 20 <= len(content) <= 1600:
+        headings = parent.find_all(re.compile("^h[2-6]$"))
+        if (parent.name in {"article", "li"} or CARD_HINT.search(classes) or headings) and len(headings) <= 1 and 20 <= len(content) <= 1600:
             return parent
     return anchor
 
@@ -56,6 +58,11 @@ def html_cards(soup: BeautifulSoup, source_url: str) -> list[dict[str, str]]:
         if not href or BAD_LINK.search(href) or href.startswith("#"):
             continue
         target = urljoin(source_url, href)
+        target_parts = urlsplit(target)
+        if NON_OPPORTUNITY_PATH.search(target_parts.path) or len(target_parts.query) > 180:
+            continue
+        if target_parts.path.rstrip("/").endswith("/jobs") and "department=" in target_parts.query:
+            continue
         host = urlparse(target).hostname or ""
         if host != source_host and not any(x in host for x in ("greenhouse.io", "lever.co", "workdayjobs.com")):
             continue
@@ -134,7 +141,7 @@ def fetch_site(site: dict[str, str]) -> tuple[list[dict[str, str]], str]:
         if kind == "greenhouse":
             jobs = response.json()["jobs"]
             return [{"title": clean(job.get("title", "")),
-                     "description": lines(visible_soup(job.get("content") or "")),
+                     "description": lines(visible_soup(unescape(job.get("content") or ""))),
                      "url": job.get("absolute_url") or url,
                      "posting_id": f"greenhouse:{site['board']}:{job['id']}",
                      "location": clean((job.get("location") or {}).get("name", ""))}
@@ -153,7 +160,8 @@ def fetch_site(site: dict[str, str]) -> tuple[list[dict[str, str]], str]:
                               "posting_id": f"lever:{site['board']}:{job['id']}",
                               "location": clean((job.get("categories") or {}).get("location", ""))})
             return cards, ""
-        soup = visible_soup(response.text)
+        # BeautifulSoup detects the page's declared encoding from raw bytes.
+        soup = visible_soup(response.content)
         if kind == "detail":
             return detail_card(soup, site), ""
         if kind == "events":

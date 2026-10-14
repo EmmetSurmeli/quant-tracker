@@ -5,17 +5,19 @@ from __future__ import annotations
 import re
 from datetime import date
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 MONTH = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
 DATE = rf"(?:(?:early|mid|late|end of)\s+{MONTH}\s+\d{{4}}|{MONTH}\s+\d{{1,2}}(?:,?\s+\d{{4}})?|{MONTH}\s+\d{{4}}|\d{{1,2}}/\d{{1,2}}/\d{{2,4}})"
 DATE_VALUE = re.compile(rf"\b(?:{DATE}\s*(?:-|–|—|to|through)\s*(?:{DATE}|\d{{1,2}}(?:,?\s+\d{{4}})?)|{DATE})\b", re.I)
 DURATION = re.compile(
-    r"\bover the course of (?:a few days|(?:one|two|three|\d+)\s*[- ]\s*(?:day|week|month)s?)\b"
-    r"|\b(?:one|two|three|\d+)\s*[- ]\s*(?:day|week|month)s?\b"
+    r"\b\d+\s*[-–]\s*\d+\s*[- ]\s*(?:day|week|month)s?\b"
+    r"|\bover the course of (?:a few days|(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s*[- ]\s*(?:day|week|month)s?)\b"
+    r"|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s*[- ]\s*(?:day|week|month)s?\b"
     r"(?:\s+(?:summer\s+)?(?:internship|program|offsite|discovery)(?:\s+program)?(?:\s+followed by\s+\d+\s+weeks?)?)?"
     r"|\ba few days\b", re.I)
 DEADLINE = re.compile(r"\b(?:apply by|apply before|application deadline|applications close|deadline|closes on|due by)\b", re.I)
-TIMELINE = re.compile(r"\b(?:program dates?|event dates?|summit dates?|internship timeline|begins|starts on|runs from|week of|from)\b", re.I)
+TIMELINE = re.compile(r"\b(?:program dates?|event dates?|summit dates?|internship timeline|begins|starts on|runs from|week of)\b", re.I)
 LOCATION = re.compile(r"^\s*(?:location|where)\s*:\s*(.+)$", re.I)
 ELIGIBILITY = re.compile(r"\b(?:first[- ]year|second[- ]year|third[- ]year|fourth[- ]year|sophomore|freshman|junior|senior|undergraduates?|graduat(?:e|ion)\s+(?:date|year|between)|class of \d{4}|degree|bachelor|master|major(?:ing)? in|studying|pursuing|eligib(?:le|ility)|who (?:can|should) apply|must be|must have|open to|students interested in|students with)\b", re.I)
 STRONG_QUANT = re.compile(r"\b(?:quant(?:itative)?|trading|trader|strats?|systematic|market\s*making|statistical\s*arbitrage|alpha\s*research)\b", re.I)
@@ -24,8 +26,8 @@ STUDENT = re.compile(r"\b(?:intern(?:ship)?s?|undergraduate|students?|first[- ]y
 EVENT_STUDENT = re.compile(r"\b(?:undergraduates?|students?|first[- ]year|second[- ]year|sophomore|campus|early careers?)\b", re.I)
 PROGRAM = re.compile(r"\b(?:program|summit|symposium|insight|immersion|discovery|discover|launchpad|futurefocus|kickstarter|event|competition|invitational|hackathon|fellowship)\b", re.I)
 EVENT = re.compile(r"\b(?:summit|symposium|event|competition|invitational|hackathon|discover)\b", re.I)
-EXCLUDED_TITLE = re.compile(r"\b(?:investment banking|wealth management|private banking|audit|tax|hr|human resources|recruit(?:ment|ing)|marketing|sales|compliance|legal|accounting|operations|administrative|customer support|phd[- ]only|experienced (?:hire|professional)|full[- ]time only)\b", re.I)
-GENERIC_TECH = re.compile(r"\b(?:software engineer(?:ing)?|frontend|backend|devops|infrastructure|it support|cybersecurity)\b", re.I)
+EXCLUDED_TITLE = re.compile(r"\b(?:investment banking|wealth management|private banking|audit|tax|hr|human resources|recruit(?:ment|ing)|marketing|sales|compliance|legal|accounting|operations|coo|chief operating|administrative|customer support|phd|graduate|experienced (?:hire|professional)|full[- ]time only)\b", re.I)
+GENERIC_TECH = re.compile(r"\b(?:software engineer(?:ing)?|software development|frontend|backend|devops|infrastructure|it support|cybersecurity)\b", re.I)
 FULL_TIME_TITLE = re.compile(r"\b(?:full[- ]time|experienced|senior|principal|staff|director|vp)\b", re.I)
 ROLE_STUDENT_TITLE = re.compile(r"\b(?:intern(?:ship)?|summer analyst)\b", re.I)
 SPECIFIC_ELIGIBILITY = re.compile(r"\b(?:first[- ]year|second[- ]year|third[- ]year|fourth[- ]year|sophomore|freshman|junior|senior|graduat(?:e|ion)|class of|degree|bachelor|master|major|studying|pursuing|must be|must have|eligible|open to)\b", re.I)
@@ -55,20 +57,26 @@ def extract_metadata(description: str, location_hint: str = "") -> dict[str, str
     deadline = value_after_trigger(lines, DEADLINE, DATE_VALUE)
     timeline = value_after_trigger(lines, TIMELINE, DATE_VALUE) or value_after_trigger(lines, TIMELINE, DURATION)
     if not timeline:
+        duration_choices: list[tuple[int, str]] = []
         for line in lines:
             range_match = DATE_VALUE.search(line)
             if range_match and len(line) < 110 and (re.search(r"(?:-|–|—|\bto\b|\bthrough\b)", range_match.group(0), re.I)
                                                    and re.match(r"^(?:from\s+)?" + MONTH, line, re.I)):
                 timeline = compact(range_match.group(0))
                 break
-            if DURATION.search(line) and (re.search(r"\b(?:program|internship|summit|event|offsite|discovery)\b", line, re.I)
-                                          or re.search(r"\b(?:over the course of|a few days)\b", line, re.I)):
-                timeline = compact(DURATION.search(line).group(0)).strip(" -:,.;")[:140]
-                break
+            for match in DURATION.finditer(line):
+                value = compact(match.group(0)).strip(" -:,.;")[:140]
+                if re.search(r"\b(?:program|internship|summit|event|offsite|discovery)\b|over the course of|a few days", value, re.I):
+                    duration_choices.append((2, value))
+                elif re.search(r"\b(?:program|internship|summit|event|offsite|discovery)\b", line, re.I):
+                    duration_choices.append((1, value))
+        if not timeline and duration_choices:
+            timeline = sorted(duration_choices, key=lambda choice: -choice[0])[0][1]
     eligibility_matches: list[tuple[int, str]] = []
     for line in lines:
         for sentence in re.split(r"(?<=[.!?])\s+", line):
-            if ELIGIBILITY.search(sentence) and len(sentence) <= 260 and sentence not in [part for _, part in eligibility_matches]:
+            if (not sentence.endswith("?") and ELIGIBILITY.search(sentence) and len(sentence) <= 260
+                    and sentence not in [part for _, part in eligibility_matches]):
                 eligibility_matches.append((2 if SPECIFIC_ELIGIBILITY.search(sentence) else 1, sentence))
     eligibility_parts = [part for _, part in sorted(eligibility_matches, key=lambda match: -match[0])[:3]]
     location = location_hint
@@ -85,15 +93,28 @@ def extract_metadata(description: str, location_hint: str = "") -> dict[str, str
 
 
 def summary_from(description: str, title: str) -> str:
+    choices: list[tuple[int, str]] = []
     for line in description.splitlines():
         cleaned = compact(line)
-        if cleaned.lower() == title.lower() or len(cleaned) < 35:
+        if cleaned.lower() == title.lower() or len(cleaned) < 35 or not re.search(r"[.!?]", cleaned):
             continue
-        if cleaned.lower() in {"apply now", "learn more", "read more"}:
+        if cleaned.endswith("?") or re.match(r"^(?:apply|please|application|learn more|read more|location|deadline|program dates?)\b", cleaned, re.I):
             continue
         sentence = re.split(r"(?<=[.!?])\s+", cleaned)[0]
-        return sentence[:237].rstrip() + ("..." if len(sentence) > 240 else "")
-    return ""
+        if re.search(r"\b(?:applications? (?:will )?open|application deadline|apply by)\b", sentence, re.I):
+            continue
+        score = 0
+        if re.search(r"\b(?:internship|interns?|program|students?|you will|you'll)\b", sentence, re.I):
+            score += 2
+        if STRONG_QUANT.search(sentence):
+            score += 1
+        if re.search(r"\b(?:is a leading|headquartered|founded in|about us)\b", sentence, re.I):
+            score -= 3
+        choices.append((score, sentence))
+    if not choices:
+        return ""
+    sentence = max(choices, key=lambda choice: choice[0])[1]
+    return sentence[:237].rstrip() + ("..." if len(sentence) > 240 else "")
 
 
 def classify(title: str, description: str) -> str:
@@ -110,6 +131,18 @@ def is_past(item: dict[str, str], today: date) -> bool:
                      item.get("program_date_or_timeline", "")))
     years = [int(year) for year in re.findall(r"\b20\d{2}\b", text)]
     return bool(years and max(years) < today.year)
+
+
+def is_specific_role_url(url: str, posting_id: str) -> bool:
+    """Reject internship overview, article, and filtered-search links."""
+    if posting_id:
+        return True
+    parts = urlsplit(url)
+    path = parts.path.lower().rstrip("/")
+    query = parse_qs(parts.query)
+    if any(key in query for key in ("gh_jid", "id", "job_id", "jobid")):
+        return True
+    return bool(re.search(r"/(?:jobs?|jobdetail|positions?)/[^/]+$", path))
 
 
 def evaluate(candidate: dict[str, str], site: dict[str, str], today: date | None = None) -> dict[str, Any] | None:
@@ -133,6 +166,8 @@ def evaluate(candidate: dict[str, str], site: dict[str, str], today: date | None
             return None
         if not (title_quant or (RESEARCH.search(title) and body_quant)):
             return None
+        if not is_specific_role_url(candidate.get("url", ""), candidate.get("posting_id", "")):
+            return None
         kind = "Internship"
     elif program and student and body_quant:
         if GENERIC_TECH.search(title) and not title_quant:
@@ -147,6 +182,7 @@ def evaluate(candidate: dict[str, str], site: dict[str, str], today: date | None
         meta["eligibility"] = extract_metadata(context)["eligibility"]
     opportunity = {
         "firm": site["firm"], "source": site["source"], "source_page_url": site["url"],
+        "source_kind": site.get("kind", "html"),
         "title_or_snippet": title[:180], "summary": summary_from(context or description, title),
         "url": candidate.get("url") or site["url"], "posting_id": candidate.get("posting_id", ""),
         "type": kind, "match_reason": "quant/trading role + internship" if kind == "Internship" else "student program/event + quant/trading focus",
