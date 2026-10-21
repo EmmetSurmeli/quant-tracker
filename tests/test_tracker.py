@@ -34,6 +34,10 @@ class FilteringTests(unittest.TestCase):
         self.assertIsNone(evaluate(card("LINK 2027: Software Development Intensive Program", "Second-year students learn about a trading firm."), SITE, TODAY))
         self.assertIsNone(evaluate(card("Trading Internship", "Undergraduate students learn trading.", "https://example.com/stories/my-internship/"), SITE, TODAY))
         self.assertIsNone(evaluate(card("Trading Internship", "Undergraduate students learn trading.", "https://example.com/internships/trading/"), SITE, TODAY))
+        self.assertIsNotNone(evaluate(card("Quantitative Trading Intern 2027", "Students work on trading models.", "https://example.com/jobs/team/12345"), SITE, TODAY))
+        self.assertIsNotNone(evaluate(card("Quantitative Intern", "Students work on trading models.", "https://example.com/vacancies/quantitative-intern/"), SITE, TODAY))
+        dedicated = {**SITE, "kind": "detail", "url": "https://example.com/careers/quant-intern-2027"}
+        self.assertIsNotNone(evaluate(card("Quantitative Research Internship 2027", "Students research trading models.", dedicated["url"]), dedicated, TODAY))
 
     def test_symposium_explicit_details(self):
         item = evaluate(card("Quant Finance Symposium", "First- and second-year undergraduate students interested in quantitative trading.\nApplication deadline: March 5, 2027\nProgram dates: Early April 2027\nLocation: Boston"), SITE, TODAY)
