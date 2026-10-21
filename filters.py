@@ -142,7 +142,7 @@ def is_specific_role_url(url: str, posting_id: str) -> bool:
     query = parse_qs(parts.query)
     if any(key in query for key in ("gh_jid", "id", "job_id", "jobid")):
         return True
-    return bool(re.search(r"/(?:jobs?|jobdetail|positions?)/[^/]+$", path))
+    return bool(re.search(r"/(?:jobs?|jobdetail|positions?|vacancies)/[^/]+(?:/[^/]+)*$", path))
 
 
 def evaluate(candidate: dict[str, str], site: dict[str, str], today: date | None = None) -> dict[str, Any] | None:
@@ -166,7 +166,8 @@ def evaluate(candidate: dict[str, str], site: dict[str, str], today: date | None
             return None
         if not (title_quant or (RESEARCH.search(title) and body_quant)):
             return None
-        if not is_specific_role_url(candidate.get("url", ""), candidate.get("posting_id", "")):
+        dedicated_listing = site.get("kind") == "detail" and candidate.get("url") == site.get("url")
+        if not dedicated_listing and not is_specific_role_url(candidate.get("url", ""), candidate.get("posting_id", "")):
             return None
         kind = "Internship"
     elif program and student and body_quant:
